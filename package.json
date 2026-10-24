@@ -1,0 +1,11 @@
+{
+  "name": "codex-dsh-message-bridge-poc",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test bridge.test.mjs diagnostics.test.mjs inbox.test.mjs",
+    "test:install": "pwsh -NoProfile -File ./install.test.ps1"
+  },
+  "engines": { "node": ">=22" }
+}

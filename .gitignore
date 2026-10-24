@@ -1,0 +1,15 @@
+node_modules/
+.inspection/
+test-result.json
+
+# Local credentials, IPC capabilities, and generated files.
+.env
+.env.*
+!.env.example
+endpoint.json
+*.pem
+*.key
+*.bak
+*.tmp
+*.log
+.review/
