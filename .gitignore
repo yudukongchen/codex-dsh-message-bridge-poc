@@ -13,3 +13,6 @@ endpoint.json
 *.tmp
 *.log
 .review/
+
+# Agent memory layer, generated inside the repo by dsh-memory-win.
+.agent-memory/
