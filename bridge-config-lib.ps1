@@ -17,21 +17,29 @@ function Get-BridgeBlock {
 }
 
 function Get-BridgeBlockEntry {
+  # Two marker-block shapes exist:
+  #   package (current): - id: <pkg> / name: '<pkg>' / config: { cwd }
+  #   legacy (0.3.1-):   - insert: -> [ - id / name: 'file:///...' / config ]
+  # A legacy block can also contain unrelated entries that the installer never
+  # wrote, so it must be migrated by hand rather than removed wholesale.
   param([Parameter(Mandatory)][AllowEmptyString()][string]$BlockText)
-  $names = [regex]::Matches($BlockText, "(?m)^ +name: '((?:[^']|'')*)'")
-  $ids = [regex]::Matches($BlockText, "(?m)^ +- id: (\S+)")
-  if ($names.Count -ne 1 -or $ids.Count -ne 1 -or $ids[0].Groups[1].Value -ne 'codex-dsh-message-bridge-poc') { return $null }
-  $name = $names[0].Groups[1].Value -replace "''", "'"
-  $cwd = [regex]::Match($BlockText, "(?m)^ +cwd: '((?:[^']|'')*)'")
-  $cwdValue = if ($cwd.Success) { $cwd.Groups[1].Value -replace "''", "'" } else { $null }
-  return [pscustomobject]@{ Name = $name; Cwd = $cwdValue }
+  $nameMatch = [regex]::Match($BlockText, "(?m)^[ \t]*name: '((?:[^']|'')*)'")
+  $cwdMatch = [regex]::Match($BlockText, "(?m)^[ \t]*cwd: '((?:[^']|'')*)'")
+  $name = if ($nameMatch.Success) { $nameMatch.Groups[1].Value -replace "''", "'" } else { $null }
+  $cwd = if ($cwdMatch.Success) { $cwdMatch.Groups[1].Value -replace "''", "'" } else { $null }
+  if ($BlockText -match '(?m)^[ \t]*- insert:') {
+    return [pscustomobject]@{ Kind = 'legacy'; Name = $name; Cwd = $cwd }
+  }
+  $idMatch = [regex]::Match($BlockText, '(?m)^[ \t]*- id: (\S+)')
+  if (-not $idMatch.Success -or -not $nameMatch.Success) { return $null }
+  return [pscustomobject]@{ Kind = 'package'; Id = $idMatch.Groups[1].Value; Name = $name; Cwd = $cwd }
 }
 
 function Test-BridgeBlockCurrent {
-  param([Parameter(Mandatory)][AllowEmptyString()][string]$BlockText, [Parameter(Mandatory)][string]$ExpectedUrl)
+  param([Parameter(Mandatory)][AllowEmptyString()][string]$BlockText, [Parameter(Mandatory)][string]$PackageName)
   $entry = Get-BridgeBlockEntry -BlockText $BlockText
   if ($null -eq $entry) { return $false }
-  return $entry.Name -eq $ExpectedUrl
+  return ($entry.Kind -eq 'package') -and ($entry.Name -eq $PackageName)
 }
 
 function ConvertTo-YamlSingleQuoted {
@@ -41,19 +49,46 @@ function ConvertTo-YamlSingleQuoted {
 }
 
 function New-BridgeBlock {
-  param([Parameter(Mandatory)][string]$PluginUrl, [Parameter(Mandatory)][string]$CwdValue)
-  $q = ConvertTo-YamlSingleQuoted $PluginUrl
+  # Current form: a same-id config override for the bundle-inserted entry.
+  param([Parameter(Mandatory)][string]$PackageName, [Parameter(Mandatory)][string]$CwdValue)
+  $n = ConvertTo-YamlSingleQuoted $PackageName
   $c = ConvertTo-YamlSingleQuoted $CwdValue
   return @"
 
 $BridgeMarkerBegin
-- insert:
-    - id: codex-dsh-message-bridge-poc
-      name: $q
-      config:
-        cwd: $c
+- id: $PackageName
+  name: $n
+  config:
+    cwd: $c
 $BridgeMarkerEnd
 "@
+}
+
+function Test-BridgePackageInstalled {
+  # The plugin is mounted by the profile package, so configuration without the
+  # package (dependency + bundles + node_modules) silently does nothing.
+  param([Parameter(Mandatory)][string]$ProfileDir, [Parameter(Mandatory)][string]$PackageName, [Parameter(Mandatory)][string]$ExpectedVersion)
+  $pkgFile = Join-Path $ProfileDir 'package.json'
+  if (-not (Test-Path -LiteralPath $pkgFile)) { throw "未找到 profile 的 package.json：$pkgFile" }
+  $pkg = Get-Content -LiteralPath $pkgFile -Raw | ConvertFrom-Json
+  $depsProp = $pkg.PSObject.Properties['dependencies']
+  if ($null -eq $depsProp -or $null -eq $depsProp.Value.PSObject.Properties[$PackageName]) {
+    throw "profile 依赖中没有 $PackageName；请先用客户端 shim 执行 dsh plugin --profile desktop add <tgz>。"
+  }
+  $bundles = @()
+  $dshProp = $pkg.PSObject.Properties['dsh']
+  if ($null -ne $dshProp) {
+    $profileProp = $dshProp.Value.PSObject.Properties['profile']
+    if ($null -ne $profileProp) {
+      $bundleProp = $profileProp.Value.PSObject.Properties['bundles']
+      if ($null -ne $bundleProp) { $bundles = @($bundleProp.Value) }
+    }
+  }
+  if ($bundles -notcontains $PackageName) { throw "profile 的 dsh.profile.bundles 中没有 $PackageName；请重新运行客户端 shim 安装。" }
+  $installedFile = Join-Path $ProfileDir "node_modules\$PackageName\package.json"
+  if (-not (Test-Path -LiteralPath $installedFile)) { throw "profile node_modules 中没有 $PackageName；请重新安装。" }
+  $version = (Get-Content -LiteralPath $installedFile -Raw | ConvertFrom-Json).version
+  if ($version -ne $ExpectedVersion) { throw "已安装版本 $version 与仓库版本 $ExpectedVersion 不一致；请重新打包并安装。" }
 }
 
 function Get-BridgeUniqueBackup {

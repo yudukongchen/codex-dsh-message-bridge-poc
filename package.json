@@ -1,11 +1,29 @@
 {
   "name": "codex-dsh-message-bridge-poc",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
+  "main": "./dsh-plugin.mjs",
+  "exports": {
+    ".": "./dsh-plugin.mjs",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "dsh-plugin.mjs",
+    "request-state.mjs",
+    "transport.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "scripts": {
-    "test": "node --test bridge.test.mjs diagnostics.test.mjs inbox.test.mjs",
-    "test:install": "pwsh -NoProfile -File ./install.test.ps1"
+    "test": "node --test bridge.test.mjs diagnostics.test.mjs inbox.test.mjs windows-acl.test.mjs",
+    "test:install": "pwsh -NoProfile -File ./install.test.ps1",
+    "pack:plugin": "npm pack --pack-destination \"%USERPROFILE%\\.dsh\\plugin-tarballs\""
   },
   "engines": { "node": ">=22" }
 }

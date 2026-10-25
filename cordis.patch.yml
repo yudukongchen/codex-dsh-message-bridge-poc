@@ -1,0 +1,11 @@
+# Bundle patch for the packaged plugin.
+#
+# The loader mounts the host half by package name; the default config is empty.
+# Machine-specific settings (notably `cwd`, the working directory of bridged
+# sessions) belong in the profile's cordis.patch.yml as a same-id override,
+# which install.ps1 writes. A non-insert patch replaces the whole config, so
+# only keys whose value differs from the plugin defaults need to be listed.
+- insert:
+    - id: codex-dsh-message-bridge-poc
+      name: 'codex-dsh-message-bridge-poc'
+      config: {}

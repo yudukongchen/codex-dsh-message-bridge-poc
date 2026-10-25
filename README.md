@@ -14,12 +14,19 @@ Codex 调用本地命令发送文本，已启动的 DSH 桌面实例在独立会
 
 在 Windows 上执行，需要 Node.js 22 或更高版本，以及 PowerShell 7。安装、卸载和安装测试统一使用 `pwsh`，不支持 Windows PowerShell 5.1。
 
+0.3.1 起扩展以 npm 包安装：profile 只保存包名与工作目录，不再指向仓库里的 `file://` 文件。桌面 profile 由客户端独占管理，`dsh` 命令行会拒绝直接操作，必须用客户端自带的 shim；桌面端也不接受符号链接，所以只能安装 tarball，不能用 `link`。
+
 ```powershell
-# 首次安装：校验最近的 package.json、模块导出、Node 版本及状态目录权限。
+# 1. 打包到 ~/.dsh/plugin-tarballs/（只含运行所需文件）
+npm run pack:plugin
+# 2. 用客户端自带 shim 装入 desktop profile（写 dependencies、node_modules 与 dsh.profile.bundles）
+$shim = "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"
+& $shim plugin --profile desktop add "$env:USERPROFILE\.dsh\plugin-tarballs\codex-dsh-message-bridge-poc-0.3.1.tgz"
+# 3. 校验 manifest 与 profile 包状态，保护状态目录 ACL，写入工作目录覆盖条目
 pwsh -NoProfile -File .\install.ps1
-# 保存工作，完全退出并重新启动 DSH 后检查连接。
+# 4. 保存工作，完全退出并重新启动 DSH 后检查连接
 node .\bridge.mjs ping
-# 不发送模型请求的体检：manifest、配置条目、状态目录权限、连接文件与管道握手。
+# 不发送模型请求的体检：manifest、profile 条目、包三处登记、状态目录权限、连接文件与管道握手。
 node .\bridge.mjs doctor
 # 默认模型改变后，让下一条消息使用新的测试会话（保留旧历史并回报旧会话 id）。
 node .\bridge.mjs new-session
@@ -32,7 +39,9 @@ Get-Content .\任务说明.md -Raw | node .\bridge.mjs send --stdin
 node .\bridge.mjs cancel
 ```
 
-## 双向收件箱（0.3.0）
+`install.ps1` 的 `-Cwd` 指定桥接会话的工作目录（默认本仓库目录），写入 profile 的同 id 覆盖条目；`-SkipPackageCheck` 只供临时 profile 的测试使用。升级时先同步 `package.json` 与 `dsh-plugin.mjs` 的 `version`，重新打包后用 shim `remove` 再 `add`——同版本重装不会让宿主重新导入入口。旧版 `file://` 条目需手工迁移：脚本检测到旧标记块会拒绝改写或整体删除，因为该块可能同时包含 `web` 等无关条目。
+
+## 双向收件箱（0.3.0 起）
 
 双方现在可以独立留言。收件箱直接保存到 `~/.dsh/bridge-poc/inbox/`，不依赖 DSH 插件在线，也不占用模型请求。发送成功返回 `queued`，表示消息已保存，接收方处理后再用 `ack` 确认。
 
@@ -55,7 +64,7 @@ node .\bridge.mjs inbox ack --as codex --channel $channel --id '<消息的完整
 
 频道必填，只接受小写英文、数字、下划线和连字符，长度为 1～100 个字符，以字母或数字开头，排除 Windows 保留设备名。`--as` 默认为 `codex`，DSH 调用时指定 `--as dsh`。每次读取最多 20 条，`--limit` 可缩小批次；处理并确认后继续读取，直到 `unread` 为 0。
 
-收件箱命令可以立即使用，无需重启 DSH。内存中的插件仍会显示旧版本号，完全重启 DSH 后显示 0.3.0。初次使用须先运行安装脚本保护状态目录；`inbox-insecure-acl` 表示权限检查未通过，此时命令拒绝保存消息。
+收件箱命令可以立即使用，无需重启 DSH。内存中的插件仍会显示旧版本号，完全重启 DSH 后显示 0.3.1。初次使用须先运行安装脚本保护状态目录；目录权限确实不合规时返回 `inbox-insecure-acl`，无法执行本机权限自检时返回 `inbox-acl-unverified` 并附 `hint` 说明原因（例如受限沙箱拦截子进程）。两者都拒绝保存消息；后者应在普通终端重新运行。
 
 双方须在任务开始、耗时操作之间及结束前检查收件箱。`watch` 只在命令运行期间检查，每 250 ms 一次，最长等待 60 秒；超时返回 `timedOut: true`，未读消息保留。本版尚未接入桌面聊天的全局自动检查或自动唤醒。具体命令、DSH 接入说明和验证结果见 [双向收件箱交付记录](双向收件箱-20261024.md)。
 
@@ -79,13 +88,19 @@ node .\bridge.mjs inbox ack --as codex --channel $channel --id '<消息的完整
 扩展不读取账户凭据，不开放 TCP 端口，不调用外部服务。通信使用随机名称的本机管道和随机连接令牌，输入上限 64 KB、回复上限 1 MB、并发客户端上限 4。连接文件 `~/.dsh/bridge-poc/endpoint.json` 的暂存文件也在受保护目录内创建，再原子替换最终文件。安装时的 Windows ACL 限制到当前用户、管理员和系统，`doctor` 分别检查目录和实际文件的授权。插件退出时只删除属于自己实例的连接文件，旧实例退出不影响新实例。DSH 自身仍会根据原有模型配置访问模型服务。
 
 ```powershell
+# 移除配置覆盖条目
 pwsh -NoProfile -File .\uninstall.ps1
+# 移除 profile 中的插件包（dependencies / node_modules / dsh.profile.bundles 三处）
+$shim = "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd"
+& $shim plugin --profile desktop remove codex-dsh-message-bridge-poc
 # 完全退出并重新启动 DSH，卸载生效。
 ```
 
-卸载脚本先备份当前配置，仅移除带本扩展标记且完整的配置块；标记半截或重复时拒绝写入并显示备份位置。独立测试会话仍保留在 DSH 历史中，可从桌面界面删除。
+卸载脚本先备份当前配置，仅移除带本扩展标记且完整的包名覆盖块；标记半截、重复或仍是旧版 `file://` 结构时拒绝写入并显示备份位置。插件包由 shim 移除；收件箱和连接状态目录 `~/.dsh/bridge-poc` 不会自动删除，需要时手工清理。独立测试会话仍保留在 DSH 历史中，可从桌面界面删除。
 
 ## 验证结果与限制
+
+2026 年 10 月 25 日，0.3.1 把安装方式从 `file://` 改为 npm 包：仓库新增 `dsh.bundle.patch`、`files` 白名单与 `pack:plugin`，profile 改为包名覆盖条目；`install.ps1`/`uninstall.ps1` 改为校验 profile 的依赖、`dsh.profile.bundles` 与 `node_modules` 版本，并拒绝改写或整体删除可能含其他条目的旧标记块。Node 测试 52 项、安装测试 22 项通过；本机 desktop profile 实测安装后 `ping` 返回 0.3.1，收件箱写入/读取与确认正常，`doctor` 12 项全部通过。迁移时发现旧标记块内还包着 `web-deepseek-api` / `web` 两条无关配置，若按旧版 `uninstall.ps1` 整体删除会一并丢失，本次已保留并在新脚本中加拒绝条件。运行中的旧 `file://` 实例仍在内存里，完全重启 DSH 后才会只按包加载；重启后的 `send` 往返尚未复测。
 
 2026 年 10 月 24 日，0.2.2 修复了真实请求收到上下文事件后误报 `attribution-conflict` 的问题。36 项桥接及诊断测试、16 项安装测试全部通过。已在本机 DSH 上完成三轮真实消息往返，包括精确标记回复、保留上下文的连续消息，以及 DSH 只读检查代码后的长回复；三轮复用同一会话。使用方式不变，更新后需完全重启 DSH。修复前后证据、协同复核意见和未验证事项见 [0.2.2 交付验证记录](消息归属修复验证-20261024.md)。
 

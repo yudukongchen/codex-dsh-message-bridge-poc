@@ -6,7 +6,7 @@ import { PHASES, createRequest, awaitBound } from './request-state.mjs';
 import { PROTOCOL_VERSION, MAX_REQUEST_BYTES, MAX_CONNECTIONS, publishEndpoint, removeOwnEndpoint } from './transport.mjs';
 
 export const name = 'codex-dsh-message-bridge-poc';
-export const version = '0.3.0';
+export const version = '0.3.1';
 export const inject = ['sessionController'];
 export const endpointFile = join(homedir(), '.dsh', 'bridge-poc', 'endpoint.json');
 

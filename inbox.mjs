@@ -14,7 +14,13 @@ const ID = /^[a-f0-9]{64}$/;
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const CHANNEL = /^[a-z0-9][a-z0-9_-]{0,99}$/;
 const DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
-const fail = code => { throw new Error(code); };
+const fail = (code, hint) => { const error = new Error(code); if (hint) error.hint = hint; throw error; };
+// Unsafe and unverifiable permissions both block writes, but only the first is
+// an ACL verdict; the second must not be reported as one.
+export function aclFailure(acl) {
+  if (acl.reason === 'acl-unsafe') return ['inbox-insecure-acl', '收件箱目录允许当前用户、管理员和系统之外的访问，请先运行 install.ps1 保护状态目录。'];
+  return ['inbox-acl-unverified', `无法验证收件箱目录权限：${acl.detail ?? '未知原因'}。命令拒绝在未验证的目录保存消息。`];
+}
 const peer = side => side === 'codex' ? 'dsh' : 'codex';
 function validate(side, channel) {
   if (!['codex', 'dsh'].includes(side)) fail('inbox-invalid-side');
@@ -50,11 +56,15 @@ async function publish(file, value) {
   } finally { await rm(temp, { force: true }); }
 }
 
-export async function openInbox(root = inboxRoot) {
+export async function openInbox(root = inboxRoot, inspectAcl = inspectPrivateAcl) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   // The installer protects the parent on Windows. Refuse to store messages in
-  // an unprotected directory rather than silently accepting broad permissions.
-  if (process.platform === 'win32' && !(await inspectPrivateAcl(root)).ok) fail('inbox-insecure-acl');
+  // an unprotected directory rather than silently accepting broad permissions;
+  // an unverifiable directory is refused for the same reason.
+  if (process.platform === 'win32') {
+    const acl = await inspectAcl(root);
+    if (!acl.ok) fail(...aclFailure(acl));
+  }
   async function directory(side, channel) {
     validate(side, channel);
     const dir = join(root, channel, side);

@@ -140,3 +140,16 @@ test('Windows inbox refuses a directory that grants other users access', { skip:
   await run('icacls.exe', [root, '/grant', '*S-1-1-0:(OI)(CI)R'], { windowsHide: true });
   await assert.rejects(openInbox(root), /inbox-insecure-acl/);
 });
+
+test('an unverifiable ACL probe refuses storage with a distinct code', { skip: process.platform !== 'win32' }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'bridge-inbox-unverified-'));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const probe = acl => async () => acl;
+  // A blocked probe must not masquerade as a permissions verdict.
+  await assert.rejects(openInbox(root, probe({ ok: false, reason: 'probe-unavailable', detail: 'spawn EPERM，可能被沙箱拦截' })),
+    error => error.message === 'inbox-acl-unverified' && /spawn EPERM/.test(error.hint));
+  await assert.rejects(openInbox(root, probe({ ok: false, reason: 'acl-unsafe', detail: 'x' })),
+    error => error.message === 'inbox-insecure-acl' && /install\.ps1/.test(error.hint));
+  const store = await openInbox(root, probe({ ok: true, reason: 'ok', detail: 'ok' }));
+  assert.equal((await store.post({ ...dsh, text: 'ok' })).status, 'queued');
+});

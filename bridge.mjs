@@ -15,6 +15,7 @@ const pluginFile = join(dirname(fileURLToPath(import.meta.url)), 'dsh-plugin.mjs
 
 const CLIENT_MARGIN_MS = 5_000;
 const DEFAULT_TIMEOUT_MS = 125_000;
+const readJsonOrNull = async file => { try { return JSON.parse(await readFile(file, 'utf8')); } catch { return null; } };
 
 function clientTimeout() {
   const raw = process.env.DSH_BRIDGE_TIMEOUT_MS;
@@ -66,8 +67,9 @@ async function readStdin() {
 export async function doctor({ stateFile = endpointFile, profileFile = join(homedir(), '.dsh', 'profiles', 'desktop', 'cordis.patch.yml'), manifestFile = pluginFile } = {}) {
   const checks = [];
   const push = (item, ok, detail) => checks.push({ item, ok, detail });
+  let manifest = null;
   try {
-    const manifest = await readPluginManifest(manifestFile);
+    manifest = await readPluginManifest(manifestFile);
     push('manifest-name', true, `package/module name=${manifest.name}`);
     push('manifest-version', true, `package/module version=${manifest.version}`);
   } catch (error) {
@@ -75,6 +77,8 @@ export async function doctor({ stateFile = endpointFile, profileFile = join(home
     push('manifest-version', false, error.message);
   }
 
+  const profileDir = dirname(profileFile);
+  const packageName = manifest?.name ?? 'codex-dsh-message-bridge-poc';
   let profileText = null;
   try { profileText = await readFile(profileFile, 'utf8'); } catch { /* missing */ }
   if (profileText === null) push('profile-entry', false, `未找到配置文件 ${profileFile}`);
@@ -85,11 +89,24 @@ export async function doctor({ stateFile = endpointFile, profileFile = join(home
     push('profile-entry', entryOk, begins === 0 ? '未发现扩展配置块，请先运行 install.ps1' : `BEGIN=${begins} END=${ends}`);
     if (entryOk) {
       const block = profileText.match(/^# BEGIN codex-dsh-message-bridge-poc[\s\S]*?^# END codex-dsh-message-bridge-poc/m);
-      const named = block?.[0]?.match(/name:\s*'((?:[^']|'')*)'/)?.[1]?.replace(/''/g, "'");
-      const selfUrl = pathToFileURL(manifestFile).href;
-      push('profile-points-here', typeof named === 'string' && named.toLowerCase() === selfUrl.toLowerCase(), named ?? '无法解析插件路径');
+      const named = block?.[0]?.match(/^\s*name:\s*'((?:[^']|'')*)'/m)?.[1]?.replace(/''/g, "'");
+      const legacy = typeof named === 'string' && named.toLowerCase().startsWith('file:');
+      push('profile-points-here', named === packageName && !legacy,
+        legacy ? `旧版 file:// 条目（${named}），请迁移为包名` : `profile 条目：${named ?? '无法解析'}`);
     }
   }
+
+  // The plugin is mounted by the profile package: dependency, bundles and
+  // node_modules must all line up or the entry silently does nothing.
+  const profilePackage = await readJsonOrNull(join(profileDir, 'package.json'));
+  const dependency = profilePackage?.dependencies?.[packageName];
+  push('package-dependency', typeof dependency === 'string', dependency ? `dependencies: ${dependency}` : `dependencies 中缺少 ${packageName}`);
+  const bundles = profilePackage?.dsh?.profile?.bundles;
+  const bundled = Array.isArray(bundles) && bundles.includes(packageName);
+  push('package-bundled', bundled, bundled ? 'dsh.profile.bundles 已包含包名' : `dsh.profile.bundles 中缺少 ${packageName}，请用客户端 shim 安装`);
+  const installed = await readJsonOrNull(join(profileDir, 'node_modules', packageName, 'package.json'));
+  const installedOk = typeof installed?.version === 'string' && installed.version === manifest?.version;
+  push('package-installed', installedOk, installed?.version ? `node_modules 版本 ${installed.version}，仓库版本 ${manifest?.version ?? '未知'}` : `node_modules 中未找到 ${packageName}`);
   const directoryAcl = await inspectPrivateAcl(dirname(stateFile));
   push('state-dir-acl', directoryAcl.ok, directoryAcl.detail);
   const endpointAcl = await inspectPrivateAcl(stateFile);
@@ -113,7 +130,7 @@ async function main(argv) {
     try { console.log(JSON.stringify(await inboxCommand(argv.slice(1), readStdin), null, 2)); }
     catch (error) {
       const code = /^inbox-[a-z-]+$/.test(error.message) ? error.message : 'inbox-storage-error';
-      console.error(JSON.stringify({ status: 'failed', errorCode: code }));
+      console.error(JSON.stringify({ status: 'failed', errorCode: code, ...(error.hint ? { hint: error.hint } : {}) }));
       process.exitCode = 1;
     }
     return;
